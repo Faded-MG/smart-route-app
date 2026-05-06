@@ -242,8 +242,9 @@ export function useMapLogic(map) {
             );
             circle.addTo(closureOverlaysRef.current);
             circle.bringToFront();
-          } else if (c.polylineLatLngs && c.polylineLatLngs.length >= 2) {
-            const polyline = window.L.polyline(c.polylineLatLngs, {
+          } else if ((c.polylineLatLngs && c.polylineLatLngs.length >= 2) || (c.coordinates && c.coordinates.length >= 2)) {
+            const polylineCoords = c.coordinates || c.polylineLatLngs;
+            const polyline = window.L.polyline(polylineCoords, {
               color: strokeColor,
               weight: active ? 5 : 3,
               opacity
@@ -267,25 +268,26 @@ export function useMapLogic(map) {
       
       const sampleClosures = [
         {
-          road: 'Bole Road (ACTIVE)',
+          id: 'sample-1',
+          location_name: 'Bole Road (ACTIVE)',
           reason: 'Construction work',
-          center: { lat: 9.02, lng: 38.75 },
-          radiusMeters: 500,
-          polylineLatLngs: null,
-          startTime: yesterday.toISOString(),
-          endTime: tomorrow.toISOString()
+          coordinates: [[9.02, 38.75], [9.021, 38.751]],
+          status: 'active',
+          start_time: yesterday.toISOString(),
+          end_time: tomorrow.toISOString()
         },
         {
-          road: 'Congo Street (SCHEDULED)',
+          id: 'sample-2',
+          location_name: 'Congo Street (SCHEDULED)',
           reason: 'Road maintenance',
-          center: null,
-          polylineLatLngs: [
+          coordinates: [
             [9.03, 38.73],
             [9.04, 38.74],
             [9.035, 38.75]
           ],
-          startTime: tomorrow.toISOString(),
-          endTime: new Date(tomorrow.getTime() + 48 * 60 * 60 * 1000).toISOString()
+          status: 'scheduled',
+          start_time: tomorrow.toISOString(),
+          end_time: new Date(tomorrow.getTime() + 48 * 60 * 60 * 1000).toISOString()
         }
       ];
       setRoadClosures(sampleClosures);
@@ -324,8 +326,9 @@ export function useMapLogic(map) {
             );
             circle.addTo(closureOverlaysRef.current);
             circle.bringToFront();
-          } else if (c.polylineLatLngs && c.polylineLatLngs.length >= 2) {
-            const polyline = window.L.polyline(c.polylineLatLngs, {
+          } else if ((c.polylineLatLngs && c.polylineLatLngs.length >= 2) || (c.coordinates && c.coordinates.length >= 2)) {
+            const polylineCoords = c.coordinates || c.polylineLatLngs;
+            const polyline = window.L.polyline(polylineCoords, {
               color: strokeColor,
               weight: active ? 5 : 3,
               opacity

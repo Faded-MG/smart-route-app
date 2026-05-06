@@ -129,7 +129,8 @@ export function sampleRouteLatLngs(latLngs) {
 export function hasGeometryForCheck(c) {
   return (
     (c.center && typeof c.center.lat === 'number' && typeof c.center.lng === 'number') ||
-    (c.polylineLatLngs && c.polylineLatLngs.length >= 2)
+    (c.polylineLatLngs && c.polylineLatLngs.length >= 2) ||
+    (c.coordinates && Array.isArray(c.coordinates) && c.coordinates.length >= 2)
   );
 }
 
@@ -147,7 +148,10 @@ export function routeIntersectsClosure(latLngs, c) {
     return false;
   }
 
-  const pl = c.polylineLatLngs;
+  // Handle new coordinates structure or polylineLatLngs
+  const pl = c.coordinates || c.polylineLatLngs;
+  if (!pl || pl.length < 2) return false;
+  
   for (let i = 0; i < samples.length; i++) {
     for (let j = 0; j < pl.length - 1; j++) {
       if (pointToSegmentMeters(samples[i], pl[j], pl[j + 1]) <= POLYLINE_BUFFER_M) {
@@ -226,6 +230,32 @@ export function parsePolylineLatLngs(raw) {
 }
 
 export function normalizeOne(raw) {
+  // Handle new AI-generated structure
+  if (raw.id && raw.location_name && raw.coordinates) {
+    const road = String(raw.location_name || 'Unnamed road');
+    const reason = String(raw.reason || 'Reason not provided');
+    const polylineLatLngs = Array.isArray(raw.coordinates) && raw.coordinates.length >= 2 
+      ? raw.coordinates.map(coord => [Number(coord[0]), Number(coord[1])])
+      : null;
+    
+    // Time-based closure support
+    const startTime = raw.start_time || raw.startTime || null;
+    const endTime = raw.end_time || raw.endTime || null;
+    
+    return {
+      id: raw.id,
+      road,
+      reason,
+      center: null, // New structure uses coordinates instead of center
+      radiusMeters: 200, // Default radius for display purposes
+      polylineLatLngs,
+      startTime,
+      endTime,
+      status: raw.status || 'active'
+    };
+  }
+  
+  // Handle legacy structure for backward compatibility
   const road = String(raw.road || raw.name || 'Unnamed road');
   const reason = String(
     raw.reason || raw.why || raw.description || raw.detail || 'Reason not provided'
