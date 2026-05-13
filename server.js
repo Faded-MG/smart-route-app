@@ -17,13 +17,13 @@ const publicDir = path.join(__dirname, "public");
 const distDir = path.join(__dirname, "frontend/dist");
 const roadsPath = process.env.ROADS_DATA_PATH || path.join(__dirname, "../traffic-parser-bot/data/roads.json");
 
-// Serve production build if it exists, otherwise fallback to public
-if (fs.existsSync(distDir)) {
+// Serve modern Smart Route app from public, fallback to frontend/dist
+if (fs.existsSync(path.join(publicDir, "index.html"))) {
+  app.use(express.static(publicDir, { index: "index.html" }));
+  console.log("Serving modern Smart Route app from:", publicDir);
+} else {
   app.use(express.static(distDir, { index: "index.html" }));
   console.log("Serving production build from:", distDir);
-} else {
-  app.use(express.static(publicDir, { index: "index.html" }));
-  console.log("Serving development files from:", publicDir);
 }
 
 app.get("/roads", (req, res) => {

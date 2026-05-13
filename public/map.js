@@ -49,368 +49,71 @@ function formatPoint(point) {
   return `${point[0].toFixed(5)}, ${point[1].toFixed(5)}`;
 }
 
-function formatMinutes(totalMinutes) {
-  const rounded = Math.round(totalMinutes);
-  const hours = Math.floor(rounded / 60);
-  const minutes = rounded % 60;
-  if (hours === 0) return `${minutes} min`;
-  return `${hours} h ${minutes} min`;
+function haversineMeters(coord1, coord2) {
+  const [lat1, lon1] = coord1;
+  const [lat2, lon2] = coord2;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return EARTH_R_M * c;
 }
 
-function toRad(deg) {
-  return (deg * Math.PI) / 180;
-}
-
-function haversineMeters(p1, p2) {
-  const dLat = toRad(p2[0] - p1[0]);
-  const dLng = toRad(p2[1] - p1[1]);
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(toRad(p1[0])) * Math.cos(toRad(p2[0])) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
-  return 2 * EARTH_R_M * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-function pointToSegmentMeters(p, a, b) {
-  const ax = a[0];
-  const ay = a[1];
-  const bx = b[0];
-  const by = b[1];
-  const px = p[0];
-  const py = p[1];
-  const abx = bx - ax;
-  const aby = by - ay;
-  const apx = px - ax;
-  const apy = py - ay;
-  const ab2 = abx * abx + aby * aby;
-  let t = ab2 < 1e-12 ? 0 : (apx * abx + apy * apy) / ab2;
+function pointToSegmentMeters(pt, segStart, segEnd) {
+  const [px, py] = pt;
+  const [ax, ay] = segStart;
+  const [bx, by] = segEnd;
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  if (len2 === 0) return Math.sqrt((px - ax) ** 2 + (py - ay) ** 2);
+  let t = ((px - ax) * dx + (py - ay) * dy) / len2;
   t = Math.max(0, Math.min(1, t));
-  const qx = ax + t * abx;
-  const qy = ay + t * aby;
-  return haversineMeters(p, [qx, qy]);
-}
-
-function sampleRouteLatLngs(latLngs) {
-  const out = [];
-  const step = Math.max(1, Math.floor(latLngs.length / 150));
-  for (let i = 0; i < latLngs.length; i += step) {
-    out.push(latLngs[i]);
-  }
-  if (out[out.length - 1] !== latLngs[latLngs.length - 1]) {
-    out.push(latLngs[latLngs.length - 1]);
-  }
-  return out;
-}
-
-function hasGeometryForCheck(c) {
-  return (
-    (c.center && typeof c.center.lat === 'number' && typeof c.center.lng === 'number') ||
-    (c.polylineLatLngs && c.polylineLatLngs.length >= 2)
-  );
-}
-
-function routeIntersectsClosure(latLngs, c) {
-  if (!hasGeometryForCheck(c)) return false;
-  const samples = sampleRouteLatLngs(latLngs);
-
-  if (c.center) {
-    const r = c.radiusMeters;
-    for (let i = 0; i < samples.length; i++) {
-      if (haversineMeters(samples[i], [c.center.lat, c.center.lng]) <= r) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  const pl = c.polylineLatLngs;
-  for (let i = 0; i < samples.length; i++) {
-    for (let j = 0; j < pl.length - 1; j++) {
-      if (pointToSegmentMeters(samples[i], pl[j], pl[j + 1]) <= POLYLINE_BUFFER_M) {
-        return true;
-      }
-    }
-  }
-  return false;
+  const proj = [ax + t * dx, ay + t * dy];
+  const dist = Math.sqrt((px - proj[0]) ** 2 + (py - proj[1]) ** 2);
+  return dist;
 }
 
 function countRouteConflicts(latLngs, closures) {
   const hits = [];
-  for (let i = 0; i < closures.length; i++) {
-    const c = closures[i];
-    if (!hasGeometryForCheck(c)) continue;
-    if (routeIntersectsClosure(latLngs, c)) {
-      hits.push(c);
+  if (!closures || closures.length === 0) return hits;
+  for (let i = 0; i < latLngs.length; i++) {
+    const pt = latLngs[i];
+    for (let j = 0; j < closures.length; j++) {
+      const c = closures[j];
+      if (c.center) {
+        const dist = haversineMeters(pt, [c.center.lat, c.center.lng]);
+        if (dist <= c.radiusMeters) {
+          hits.push({ closure: c, point: pt, distance: dist });
+          continue;
+        }
+      }
+      if (c.polylineLatLngs && c.polylineLatLngs.length >= 2) {
+        for (let k = 0; k < c.polylineLatLngs.length - 1; k++) {
+          const dist = pointToSegmentMeters(pt, c.polylineLatLngs[k], c.polylineLatLngs[k + 1]);
+          if (dist <= POLYLINE_BUFFER_M) {
+            hits.push({ closure: c, point: pt, distance: dist });
+            continue;
+          }
+        }
+      }
     }
   }
   return hits;
 }
 
-function pickBestRoute(routes) {
-  if (routes.length === 0) {
-    return { route: null, index: -1, conflictHits: [] };
-  }
-  if (roadClosures.length === 0) {
-    return { route: routes[0], index: 0, conflictHits: [] };
-  }
-
-  const scored = routes.map(function (r, i) {
-    const latLngs = r.geometry.coordinates.map(function (coord) {
-      return [coord[1], coord[0]];
-    });
-    const conflictHits = countRouteConflicts(latLngs, roadClosures);
-    return {
-      route: r,
-      index: i,
-      conflictCount: conflictHits.length,
-      conflictHits,
-      duration: r.duration
-    };
-  });
-
-  scored.sort(function (a, b) {
-    if (a.conflictCount !== b.conflictCount) {
-      return a.conflictCount - b.conflictCount;
-    }
-    return a.duration - b.duration;
-  });
-
-  return {
-    route: scored[0].route,
-    index: scored[0].index,
-    conflictHits: scored[0].conflictHits
-  };
-}
-
-function setRouteAdvice(html, isOk) {
-  routeAdvice.hidden = false;
-  routeAdvice.classList.toggle('advice-ok', Boolean(isOk));
-  routeAdvice.innerHTML = html;
-}
-
-function clearRouteAdvice() {
-  routeAdvice.hidden = true;
-  routeAdvice.textContent = '';
-  routeAdvice.classList.remove('advice-ok');
-}
-
-function updateTimeEstimate() {
-  if (!startPoint || !endPoint) {
-    timeEstimateText.textContent = 'Estimated time will appear after selecting destination.';
-    clearRouteAdvice();
-    return;
-  }
-
-  if (isRouting) {
-    timeEstimateText.textContent = 'Calculating route and ETA...';
-    return;
-  }
-
-  if (!routeSummary) {
-    timeEstimateText.textContent =
-      'Could not fetch road route right now. Try reset and select points again.';
-    return;
-  }
-
-  const distanceKm = routeSummary.distanceMeters / 1000;
-  const durationMin = routeSummary.durationSeconds / 60;
-  const estimatedFuelLiters = (distanceKm * estimatedFuelLitersPer100Km) / 100;
-  timeEstimateText.textContent =
-    `Road distance: ${distanceKm.toFixed(2)} km | Drive ETA: ${formatMinutes(durationMin)} | Estimated fuel: ${estimatedFuelLiters.toFixed(2)} L`;
-}
-
-function updateStatus() {
-  if (!startPoint) {
-    statusText.textContent = 'Search for start and destination, or tap the map to set points.';
-    return;
-  }
-
-  if (!endPoint) {
-    statusText.textContent = `Start: ${formatPoint(startPoint)}. Click again to set destination.`;
-    updateTimeEstimate();
-    return;
-  }
-
-  statusText.textContent = `Start: ${formatPoint(startPoint)} | Destination: ${formatPoint(endPoint)}`;
-  updateTimeEstimate();
-}
-
-function clearSuggestions(listElement) {
-  listElement.innerHTML = '';
-}
-
-function setStartPoint(lat, lng, label) {
-  startPoint = [lat, lng];
-  if (startMarker) {
-    map.removeLayer(startMarker);
-  }
-  startMarker = L.marker([lat, lng])
-    .addTo(map)
-    .bindPopup('Start Point')
-    .openPopup();
-  if (label) {
-    startInput.value = label;
-  }
-}
-
-function setEndPoint(lat, lng, label) {
-  endPoint = [lat, lng];
-  if (endMarker) {
-    map.removeLayer(endMarker);
-  }
-  endMarker = L.marker([lat, lng])
-    .addTo(map)
-    .bindPopup('Destination')
-    .openPopup();
-  if (label) {
-    destinationInput.value = label;
-  }
-}
-
-function parsePolylineLatLngs(raw) {
-  if (!raw) return null;
-  let arr = null;
-  if (Array.isArray(raw)) {
-    arr = raw;
-  } else if (raw.type === 'LineString' && Array.isArray(raw.coordinates)) {
-    arr = raw.coordinates;
-  }
-  if (!arr || arr.length < 2) return null;
-  return arr.map(function (pair) {
-    const a = Number(pair[0]);
-    const b = Number(pair[1]);
-    if (Math.abs(a) > 20 && Math.abs(b) < 20) {
-      return [b, a];
-    }
-    return [a, b];
-  });
-}
-
-function normalizeOne(raw) {
-  const road = String(raw.road || raw.name || 'Unnamed road');
-  const reason = String(
-    raw.reason || raw.why || raw.description || raw.detail || 'Reason not provided'
-  );
-  let center = null;
-  if (raw.center) {
-    center = {
-      lat: Number(raw.center.lat),
-      lng: Number(raw.center.lon != null ? raw.center.lon : raw.center.lng)
-    };
-  } else if (raw.lat != null && (raw.lng != null || raw.lon != null)) {
-    center = {
-      lat: Number(raw.lat),
-      lng: Number(raw.lng != null ? raw.lng : raw.lon)
-    };
-  }
-  const radiusMeters = Math.max(10, Number(raw.radiusMeters ?? raw.radius ?? 100));
-  const polylineLatLngs = parsePolylineLatLngs(
-    raw.polyline || raw.line || (raw.geometry && raw.geometry)
-  );
-  return {
-    road,
-    reason,
-    center: center && !Number.isNaN(center.lat) && !Number.isNaN(center.lng) ? center : null,
-    radiusMeters: Number.isFinite(radiusMeters) ? radiusMeters : 100,
-    polylineLatLngs: polylineLatLngs && polylineLatLngs.length >= 2 ? polylineLatLngs : null
-  };
-}
-
-function normalizeClosuresPayload(data) {
-  if (Array.isArray(data)) return data;
-  if (data && Array.isArray(data.closures)) return data.closures;
-  if (data && Array.isArray(data.roads)) return data.roads;
-  return [];
-}
-
-function renderClosureList(closures) {
-  closureList.innerHTML = '';
-  for (let i = 0; i < closures.length; i++) {
-    const c = closures[i];
-    const li = document.createElement('li');
-    const title = document.createElement('span');
-    title.className = 'closure-road';
-    title.textContent = c.road;
-    if (!hasGeometryForCheck(c)) {
-      const badge = document.createElement('span');
-      badge.className = 'closure-badge';
-      badge.textContent = 'no map zone';
-      title.appendChild(badge);
-    }
-    const why = document.createElement('span');
-    why.className = 'closure-why';
-    why.textContent = c.reason;
-    li.appendChild(title);
-    li.appendChild(why);
-    closureList.appendChild(li);
-  }
-}
-
-function drawClosureOverlays(closures) {
-  closureOverlays.clearLayers();
-  for (let i = 0; i < closures.length; i++) {
-    const c = closures[i];
-    if (c.center) {
-      const circle = L.circle([c.center.lat, c.center.lng], {
-        radius: c.radiusMeters,
-        color: '#7a2e2e',
-        weight: 2,
-        fillColor: '#c45c5c',
-        fillOpacity: 0.15
-      });
-      circle.bindPopup(
-        '<strong>' + escapeHtml(c.road) + '</strong><br>' + escapeHtml(c.reason)
-      );
-      circle.addTo(closureOverlays);
-    } else if (c.polylineLatLngs && c.polylineLatLngs.length >= 2) {
-      L.polyline(c.polylineLatLngs, {
-        color: '#7a2e2e',
-        weight: 4,
-        opacity: 0.8
-      })
-        .bindPopup(
-          '<strong>' + escapeHtml(c.road) + '</strong><br>' + escapeHtml(c.reason)
-        )
-        .addTo(closureOverlays);
-    }
-  }
-}
-
-async function loadRoadClosures() {
-  closureLoadState.textContent = 'Loading road closures from server…';
-  try {
-    const res = await fetch('/roads', { headers: { Accept: 'application/json' } });
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`);
-    }
-    const data = await res.json();
-    const rawList = normalizeClosuresPayload(data);
-    roadClosures = rawList.map(normalizeOne);
-    if (roadClosures.length === 0) {
-      closureLoadState.textContent = 'No closures reported. Your bot can add entries to roads.json.';
-    } else {
-      closureLoadState.textContent = `${roadClosures.length} closure(s) — routes avoid these when a better path exists.`;
-    }
-    renderClosureList(roadClosures);
-    drawClosureOverlays(roadClosures);
-    if (startPoint && endPoint) {
-      drawRouteLine();
-    }
-  } catch (e) {
-    roadClosures = [];
-    closureLoadState.textContent =
-      'Could not load /roads. Run npm start in smart-route-app and ensure road-closure-bot/data/roads.json exists.';
-    closureList.innerHTML = '';
-    console.error(e);
-  }
-}
-
 async function fetchPlaces(query) {
   const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&addressdetails=1&q=${encodeURIComponent(query)}`;
   const response = await fetch(url, { headers: { Accept: 'application/json' } });
-  if (!response.ok) {
-    throw new Error(`Search failed: ${response.status}`);
-  }
-  return response.json();
+  if (!response.ok) throw new Error(`Place search failed: ${response.status}`);
+  const data = await response.json();
+  return data.map(function (p) {
+    return {
+      display_name: p.display_name,
+      lat: Number(p.lat),
+      lon: Number(p.lon)
+    };
+  });
 }
 
 function renderSuggestions(type, places) {
@@ -440,25 +143,310 @@ function renderSuggestions(type, places) {
   });
 }
 
-function debounceSearch(type, inputElement, waitMs) {
-  let timer = null;
-  inputElement.addEventListener('input', function () {
-    const query = inputElement.value.trim();
-    const listElement = type === 'start' ? startSuggestions : destinationSuggestions;
-    clearTimeout(timer);
-    if (query.length < 3) {
-      clearSuggestions(listElement);
-      return;
+function clearSuggestions(listElement) {
+  listElement.innerHTML = '';
+}
+
+function setStartPoint(lat, lng, name) {
+  startPoint = [lat, lng];
+  if (startMarker) {
+    map.removeLayer(startMarker);
+  }
+  startMarker = L.marker([lat, lng]).addTo(map);
+  if (name) {
+    startMarker.bindPopup(`Start: ${escapeHtml(name)}`).openPopup();
+  }
+  startInput.value = name || formatPoint([lat, lng]);
+  clearSuggestions(startSuggestions);
+}
+
+function setEndPoint(lat, lng, name) {
+  endPoint = [lat, lng];
+  if (endMarker) {
+    map.removeLayer(endMarker);
+  }
+  endMarker = L.marker([lat, lng]).addTo(map);
+  if (name) {
+    endMarker.bindPopup(`Destination: ${escapeHtml(name)}`).openPopup();
+  }
+  destinationInput.value = name || formatPoint([lat, lng]);
+  clearSuggestions(destinationSuggestions);
+}
+
+function updateStatus() {
+  if (!startPoint && !endPoint) {
+    statusText.textContent = 'Click on the map to set a start point.';
+  } else if (startPoint && !endPoint) {
+    statusText.textContent = 'Click on the map to set the destination point.';
+  } else {
+    statusText.textContent = `Route: ${escapeHtml(startInput.value)} → ${escapeHtml(destinationInput.value)}`;
+  }
+}
+
+function updateTimeEstimate() {
+  if (!routeSummary) {
+    timeEstimateText.textContent = 'Estimated time will appear after selecting destination.';
+    return;
+  }
+  const minutes = Math.round(routeSummary.durationSeconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  let text = '';
+  if (hours > 0) {
+    text = `${hours}h ${remainingMinutes}min`;
+  } else {
+    text = `${minutes}min`;
+  }
+  const km = (routeSummary.distanceMeters / 1000).toFixed(1);
+  const fuel = (km * estimatedFuelLitersPer100Km / 100).toFixed(1);
+  timeEstimateText.textContent = `${text} (${km}km, ~${fuel}L fuel)`;
+}
+
+async function loadRoadClosures() {
+  closureLoadState.textContent = 'Loading road closures from server…';
+  try {
+    const res = await fetch('/roads', { headers: { Accept: 'application/json' } });
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
     }
-    timer = setTimeout(async function () {
-      try {
-        const places = await fetchPlaces(query);
-        renderSuggestions(type, places);
-      } catch (error) {
-        console.error(error);
-      }
-    }, waitMs);
+    const data = await res.json();
+    const rawList = normalizeClosuresPayload(data);
+    roadClosures = rawList.map(normalizeOne);
+    
+    // Filter active closures for routing logic
+    const now = new Date();
+    const activeClosures = roadClosures.filter(closure => {
+      const isActive = closure.status === 'active';
+      const isCurrentlyActive = closure.start_time && new Date(closure.start_time) <= now && 
+        (!closure.end_time || new Date(closure.end_time) > now);
+      return isActive || isCurrentlyActive;
+    });
+    
+    // Store active closures globally for route avoidance
+    window.activeClosures = activeClosures;
+    
+    if (roadClosures.length === 0) {
+      closureLoadState.textContent = 'No closures reported. Your bot can add entries to roads.json.';
+    } else {
+      closureLoadState.textContent = `${roadClosures.length} closure(s) (${activeClosures.length} active) — routes avoid these when a better path exists.`;
+    }
+    renderClosureList(roadClosures);
+    drawClosureOverlays(roadClosures);
+    if (startPoint && endPoint) {
+      drawRouteLine();
+    }
+  } catch (e) {
+    roadClosures = [];
+    window.activeClosures = [];
+    closureLoadState.textContent =
+      'Could not load /roads. Run npm start in smart-route-app and ensure road-closure-bot/data/roads.json exists.';
+    closureList.innerHTML = '';
+    console.error(e);
+  }
+}
+
+function normalizeClosuresPayload(data) {
+  if (data && Array.isArray(data.roads)) return data.roads;
+  return [];
+}
+
+function normalizeOne(raw) {
+  const road = String(raw.road || raw.name || 'Unnamed road');
+  const reason = String(
+    raw.reason || raw.why || raw.description || raw.detail || 'Reason not provided'
+  );
+  let center = null;
+  if (raw.center) {
+    center = {
+      lat: Number(raw.center.lat),
+      lng: Number(raw.center.lon != null ? raw.center.lon : raw.center.lng)
+    };
+  } else if (raw.lat != null && (raw.lng != null || raw.lon != null)) {
+    center = {
+      lat: Number(raw.lat),
+      lng: Number(raw.lng != null ? raw.lng : raw.lon)
+    };
+  }
+  const radiusMeters = Math.max(10, Number(raw.radiusMeters ?? raw.radius ?? 100));
+  const polylineLatLngs = parsePolylineLatLngs(
+    raw.polyline || raw.line || (raw.geometry && raw.geometry)
+  );
+
+  // Time-based closure support
+  const startTime = raw.startTime || raw.start || raw.from || null;
+  const endTime = raw.endTime || raw.end || raw.to || raw.until || null;
+
+  return {
+    road,
+    reason,
+    center: center && !Number.isNaN(center.lat) && !Number.isNaN(center.lng) ? center : null,
+    radiusMeters: Number.isFinite(radiusMeters) ? radiusMeters : 100,
+    polylineLatLngs: polylineLatLngs && polylineLatLngs.length >= 2 ? polylineLatLngs : null,
+    startTime,
+    endTime
+  };
+}
+
+function parsePolylineLatLngs(polyline) {
+  if (!polyline) return null;
+  try {
+    if (typeof polyline === 'string') {
+      return polyline.split(';').map(coord => {
+        const parts = coord.split(',');
+        return [Number(parts[1]), Number(parts[0])];
+      });
+    }
+    if (Array.isArray(polyline)) {
+      return polyline.map(coord => {
+        if (Array.isArray(coord) && coord.length >= 2) {
+          return [Number(coord[1]), Number(coord[0])];
+        }
+        return null;
+      }).filter(Boolean);
+    }
+  } catch (e) {
+    console.warn('Failed to parse polyline:', e);
+    return null;
+  }
+}
+
+function renderClosureList(closures) {
+  closureList.innerHTML = '';
+  closures.forEach(function (c) {
+    const item = document.createElement('li');
+    const road = document.createElement('span');
+    road.className = 'closure-road';
+    road.textContent = c.road;
+    item.appendChild(road);
+    if (c.why) {
+      const why = document.createElement('span');
+      why.className = 'closure-why';
+      why.textContent = ` (${escapeHtml(c.why)})`;
+      item.appendChild(why);
+    }
+    if (c.startTime) {
+      const badge = document.createElement('span');
+      badge.className = 'closure-badge';
+      badge.textContent = isClosureActive(c) ? 'ACTIVE' : 'SCHEDULED';
+      item.appendChild(badge);
+    }
+    closureList.appendChild(item);
   });
+}
+
+function isClosureActive(c) {
+  const now = new Date();
+  if (c.startTime && new Date(c.startTime) <= now) {
+    if (!c.endTime) return true;
+    return new Date(c.endTime) > now;
+  }
+  return false;
+}
+
+function drawClosureOverlays(closures) {
+  closureOverlays.clearLayers();
+  closures.forEach(function (c) {
+    const active = isClosureActive(c);
+    const strokeColor = active ? '#dc2626' : '#6b7280';
+    const weight = active ? 4 : 2;
+    const fillColor = active ? 'rgba(220, 38, 38, 0.2)' : 'rgba(107, 114, 128, 0.1)';
+    const fillOpacity = active ? 0.3 : 0.1;
+    if (c.center && !Number.isNaN(c.center.lat) && !Number.isNaN(c.center.lng)) {
+      const circle = L.circle([c.center.lat, c.center.lng], {
+        radius: c.radiusMeters,
+        color: strokeColor,
+        weight,
+        fillColor,
+        fillOpacity
+      });
+      circle.bindPopup(
+        `<strong>${escapeHtml(c.road)}</strong><br>` +
+        `<span style="color: ${active ? '#dc2626' : '#6b7280'}; font-weight: bold;">${statusLabel}</span><br>` +
+        `${escapeHtml(c.why)}<br>` +
+        `<small>${timeInfo}</small>`
+      );
+      circle.addTo(closureOverlays);
+    }
+    if (c.polylineLatLngs && c.polylineLatLngs.length >= 2) {
+      const polyline = L.polyline(c.polylineLatLngs, {
+        color: strokeColor,
+        weight,
+        opacity
+      });
+      polyline.bindPopup(
+        `<strong>${escapeHtml(c.road)}</strong><br>` +
+        `<span style="color: ${active ? '#dc2626' : '#6b7280'}; font-weight: bold;">${statusLabel}</span><br>` +
+        `${escapeHtml(c.why)}<br>` +
+        `<small>${timeInfo}</small>`
+      );
+      polyline.addTo(closureOverlays);
+    }
+  });
+}
+
+function pickBestRoute(routes) {
+  if (routes.length === 0) {
+    return { route: null, index: -1, conflictHits: [] };
+  }
+  
+  const activeClosures = window.activeClosures || [];
+  if (activeClosures.length === 0) {
+    return { route: routes[0], index: 0, conflictHits: [] };
+  }
+
+  const scored = routes.map(function (r, i) {
+    const latLngs = r.geometry.coordinates.map(function (coord) {
+      return [coord[1], coord[0]];
+    });
+    const conflictHits = countRouteConflicts(latLngs, activeClosures);
+    return {
+      route: r,
+      index: i,
+      conflictCount: conflictHits.length,
+      conflictHits,
+      duration: r.duration
+    };
+  });
+
+  scored.sort(function (a, b) {
+    if (a.conflictCount !== b.conflictCount) {
+      return a.conflictCount - b.conflictCount;
+    }
+    return a.duration - b.duration;
+  });
+
+  const bestRoute = scored[0];
+  
+  // Add warning notifications for unavoidable closures
+  if (bestRoute.conflictHits.length > 0) {
+    const unavoidableClosures = bestRoute.conflictHits.map(hit => hit.closure);
+    const warningMessage = unavoidableClosures.map(closure => 
+      `Note: Your route passes through a ${closure.reason} closure at ${closure.location_name}.`
+    ).join(' ');
+    
+    setRouteAdvice(
+      `<strong>⚠️ Route Alert:</strong> ${warningMessage}`,
+      false
+    );
+  }
+
+  return {
+    route: bestRoute.route,
+    index: bestRoute.index,
+    conflictHits: bestRoute.conflictHits
+  };
+}
+
+function setRouteAdvice(html, isOk) {
+  routeAdvice.hidden = false;
+  routeAdvice.classList.toggle('advice-ok', Boolean(isOk));
+  routeAdvice.innerHTML = html;
+}
+
+function clearRouteAdvice() {
+  routeAdvice.hidden = true;
+  routeAdvice.textContent = '';
+  routeAdvice.classList.remove('advice-ok');
 }
 
 async function drawRouteLine() {
@@ -518,22 +506,17 @@ async function drawRouteLine() {
     } else if (hadConflict) {
       const names = conflictHits
         .map(function (c) {
-          return `<em>${escapeHtml(c.road)}</em> (${escapeHtml(c.reason)})`;
+          return `<em>${escapeHtml(c.road)}</em> (${escapeHtml(c.why)})`;
         })
         .join('; ');
       setRouteAdvice(
         `<strong>Heads up:</strong> this path may still go through a reported closure: ${names}. ` +
-          'Tighten the zone in <code>roads.json</code> (smaller radius or a line along the closed segment) to improve detours.',
+        'Tighten the zone in <code>roads.json</code> (smaller radius or a line along the closed segment) to improve detours.',
         false
-      );
-    } else if (data.routes.length > 1) {
-      setRouteAdvice(
-        '<strong>Detour applied.</strong> We compared several driving options and kept the one that best avoids the closure zones on file.',
-        true
       );
     } else {
       setRouteAdvice(
-        '<strong>Route clear of mapped closures.</strong> Only one road option was returned for this trip; it does not cross the zones your list describes.',
+        '<strong>Detour applied.</strong> We compared several driving options and kept the one that best avoids closure zones on file.',
         true
       );
     }
@@ -597,7 +580,7 @@ function useCurrentLocation() {
       drawRouteLine();
     },
     function () {
-      statusText.textContent = 'Location access was denied. You can still type the start point.';
+      statusText.textContent = 'Location access was denied. You can still type start point.';
     },
     { enableHighAccuracy: true, timeout: 10000 }
   );
@@ -633,12 +616,14 @@ resetButton.addEventListener('click', resetRoute);
 useLocationButton.addEventListener('click', useCurrentLocation);
 debounceSearch('start', startInput, 300);
 debounceSearch('destination', destinationInput, 300);
+
 document.addEventListener('click', function (event) {
   if (!event.target.closest('.input-group')) {
     clearSuggestions(startSuggestions);
     clearSuggestions(destinationSuggestions);
   }
 });
+
 updateStatus();
 updateTimeEstimate();
 loadRoadClosures();

@@ -1,371 +1,229 @@
-import { useEffect, useRef, useState } from "react";
-import "./App.css";
-import { useMapLogic } from "./useMapLogic";
-import { useNotifications } from "./useNotifications";
-import { fetchPlaces, hasGeometryForCheck, isClosureActive, formatClosureTime } from "./mapUtils";
+import { useEffect, useMemo, useState } from 'react'
+import { fetchPlaces } from './mapUtils'
+import { useRoadClosures } from './hooks/useRoadClosures'
+import { useSmartRouting } from './hooks/useSmartRouting'
+import SmartRoutingMap from './components/map/SmartRoutingMap'
+import RouteControlPanel from './components/route/RouteControlPanel'
+import BestSmartRouteCard from './components/recommendation/BestSmartRouteCard'
+import AlternativeRoutesList from './components/recommendation/AlternativeRoutesList'
+import AIInsightsCard from './components/recommendation/AIInsightsCard'
+import RouteInfoCard from './components/recommendation/RouteInfoCard'
+import ClosureAlertsPanel from './components/closures/ClosureAlertsPanel'
+
+import './styles/smartRouting.css'
+
+function pinnedLabel(lat, lng) {
+  return `Pinned: ${lat.toFixed(4)}, ${lng.toFixed(4)}`
+}
 
 export default function App() {
-  const mapRef = useRef(null);
-  const [map, setMap] = useState(null);
+  const [startQuery, setStartQuery] = useState('')
+  const [destinationQuery, setDestinationQuery] = useState('')
+  const [startSuggestions, setStartSuggestions] = useState([])
+  const [destinationSuggestions, setDestinationSuggestions] = useState([])
 
+  const [startPoint, setStartPoint] = useState(null) // [lat, lng]
+  const [endPoint, setEndPoint] = useState(null) // [lat, lng]
+
+  const { closures, activeClosures, statusText, nextReopen } = useRoadClosures()
+  const { isRouting, error, alternatives, selectedRouteId, selectedRoute, smartMeta, computeSmartRoute, selectRoute, clear } =
+    useSmartRouting()
+
+  const statusHint = useMemo(() => {
+    if (!startPoint) return 'Tap the map or search a start point'
+    if (!endPoint) return 'Now drop the destination (tap map or search)'
+    return 'Ready — press Search smart route'
+  }, [startPoint, endPoint])
+
+  // Autocomplete
   useEffect(() => {
-    if (window.L && !mapRef.current) {
-      const mapInstance = window.L.map("map").setView([9.03, 38.74], 13);
-      mapRef.current = mapInstance;
-      setMap(mapInstance);
-
-      window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        attribution: "&copy; OpenStreetMap contributors",
-        referrerPolicy: "strict-origin-when-cross-origin"
-      }).addTo(mapInstance);
-
-      if (window.location.protocol === 'file:') {
-        alert('Open this app through http://localhost (not file://) to load OpenStreetMap tiles.');
+    const timer = setTimeout(async () => {
+      if (startQuery.trim().length < 3) {
+        setStartSuggestions([])
+        return
       }
-    }
-  }, []);
-
-  const {
-    status,
-    timeEstimate,
-    routeAdvice,
-    closureLoadState,
-    roadClosures,
-    handleMapClick,
-    useCurrentLocation,
-    resetRoute,
-    setStartPoint,
-    setEndPoint,
-    drawRouteLine,
-  } = useMapLogic(map);
-  
-  // Notifications
-  const {
-    isSupported: notificationsSupported,
-    isGranted,
-    isDenied,
-    requestPermission,
-    sendTestNotification,
-    checkClosuresNow
-  } = useNotifications();
-  
-  // Helper to get closure status styling
-  const getClosureStatusStyle = (c) => {
-    const result = isClosureActive(c);
-    if (result.status === 'active' || result.status === 'always') {
-      return { color: '#dc2626', label: 'ACTIVE' };
-    }
-    if (result.status === 'scheduled') {
-      return { color: '#9ca3af', label: 'SCHEDULED' };
-    }
-    return { color: '#6b7280', label: 'EXPIRED' };
-  };
-
-  useEffect(() => {
-    if (map) {
-      map.on('click', handleMapClick);
-    }
-    return () => {
-      if (map) {
-        map.off('click', handleMapClick);
+      try {
+        const places = await fetchPlaces(startQuery)
+        setStartSuggestions(places)
+      } catch {
+        setStartSuggestions([])
       }
-    };
-  }, [map, handleMapClick]);
-
-  const [startSuggestions, setStartSuggestions] = useState([]);
-  const [destinationSuggestions, setDestinationSuggestions] = useState([]);
-  const [startQuery, setStartQuery] = useState('');
-  const [destinationQuery, setDestinationQuery] = useState('');
+    }, 280)
+    return () => clearTimeout(timer)
+  }, [startQuery])
 
   useEffect(() => {
     const timer = setTimeout(async () => {
-      if (startQuery.length < 3) {
-        setStartSuggestions([]);
-        return;
+      if (destinationQuery.trim().length < 3) {
+        setDestinationSuggestions([])
+        return
       }
       try {
-        const places = await fetchPlaces(startQuery);
-        setStartSuggestions(places);
-      } catch (error) {
-        console.error(error);
+        const places = await fetchPlaces(destinationQuery)
+        setDestinationSuggestions(places)
+      } catch {
+        setDestinationSuggestions([])
       }
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [startQuery]);
+    }, 280)
+    return () => clearTimeout(timer)
+  }, [destinationQuery])
 
-  useEffect(() => {
-    const timer = setTimeout(async () => {
-      if (destinationQuery.length < 3) {
-        setDestinationSuggestions([]);
-        return;
-      }
-      try {
-        const places = await fetchPlaces(destinationQuery);
-        setDestinationSuggestions(places);
-      } catch (error) {
-        console.error(error);
-      }
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [destinationQuery]);
+  const handlePickPoint = ({ lat, lng }) => {
+    if (typeof lat !== 'number' || typeof lng !== 'number') return
 
-  const handleSuggestionClick = (place, type) => {
-    const lat = Number(place.lat);
-    const lon = Number(place.lon);
-    const label = place.display_name;
-    
-    if (type === 'start') {
-      setStartSuggestions([]);
-      setStartQuery(label);
-      setStartPoint(lat, lon);
-    } else {
-      setDestinationSuggestions([]);
-      setDestinationQuery(label);
-      setEndPoint(lat, lon);
-    }
-    
-    if (map) map.setView([lat, lon], 14);
-    drawRouteLine();
-  };
-
-  useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (!event.target.closest('.input-group')) {
-        setStartSuggestions([]);
-        setDestinationSuggestions([]);
-      }
-    };
-    document.addEventListener('click', handleClickOutside);
-    return () => document.removeEventListener('click', handleClickOutside);
-  }, []);
-
-  useEffect(() => {
-    const resetBtn = document.getElementById('resetBtn');
-    const useLocationBtn = document.getElementById('useLocationBtn');
-    
-    if (resetBtn) {
-      resetBtn.addEventListener('click', () => {
-        resetRoute();
-        setStartQuery('');
-        setDestinationQuery('');
-      });
-    }
-    if (useLocationBtn) {
-      useLocationBtn.addEventListener('click', useCurrentLocation);
+    // If both are set, start a new trip.
+    if (startPoint && endPoint) {
+      setEndPoint(null)
+      clear()
+      setStartPoint([lat, lng])
+      setStartQuery(pinnedLabel(lat, lng))
+      setDestinationQuery('')
+      setDestinationSuggestions([])
+      return
     }
 
-    return () => {
-      if (resetBtn) resetBtn.removeEventListener('click', resetRoute);
-      if (useLocationBtn) useLocationBtn.removeEventListener('click', useCurrentLocation);
-    };
-  }, [resetRoute, useCurrentLocation]);
+    if (!startPoint) {
+      setStartPoint([lat, lng])
+      setStartQuery(pinnedLabel(lat, lng))
+      setStartSuggestions([])
+      clear()
+      return
+    }
+
+    if (!endPoint) {
+      setEndPoint([lat, lng])
+      setDestinationQuery(pinnedLabel(lat, lng))
+      setDestinationSuggestions([])
+      clear()
+    }
+  }
+
+  const canSearch = Boolean(startPoint && endPoint)
+
+  const handleSelectStart = (place) => {
+    const lat = Number(place?.lat)
+    const lon = Number(place?.lon)
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return
+    setStartPoint([lat, lon])
+    setStartQuery(place.display_name || 'Start')
+    setStartSuggestions([])
+    clear()
+  }
+
+  const handleSelectDestination = (place) => {
+    const lat = Number(place?.lat)
+    const lon = Number(place?.lon)
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return
+    setEndPoint([lat, lon])
+    setDestinationQuery(place.display_name || 'Destination')
+    setDestinationSuggestions([])
+    clear()
+  }
+
+  const handleReset = () => {
+    setStartPoint(null)
+    setEndPoint(null)
+    setStartQuery('')
+    setDestinationQuery('')
+    setStartSuggestions([])
+    setDestinationSuggestions([])
+    clear()
+  }
+
+  const handleCurrentLocation = () => {
+    if (!navigator.geolocation) return
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const lat = position.coords.latitude
+        const lng = position.coords.longitude
+        setStartPoint([lat, lng])
+        setStartQuery('Current location')
+        setStartSuggestions([])
+        clear()
+      },
+      () => {
+        // Keep it silent but UX-safe; the app still works without geolocation.
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    )
+  }
+
+  const handleSearch = () => {
+    if (!startPoint || !endPoint) return
+    computeSmartRoute({ startPoint, endPoint, closures })
+  }
 
   return (
-    <main className="app-shell">
-      <section className="top-panel">
-        <h1>Smart Route Recommender</h1>
-
-        <p className="subtitle">
-          Search start and destination like a maps app, or use your current location.
-        </p>
-
-        <div className="search-grid">
-          <div className="input-group">
-            <label htmlFor="startInput">Start</label>
-            <input
-              id="startInput"
-              type="text"
-              placeholder="Search starting point"
-              autoComplete="off"
-              value={startQuery}
-              onChange={(e) => setStartQuery(e.target.value)}
-            />
-            <ul id="startSuggestions" className="suggestions">
-              {startSuggestions.map((place) => (
-                <li key={place.place_id} className="suggestion-item">
-                  <button
-                    type="button"
-                    onClick={() => handleSuggestionClick(place, 'start')}
-                  >
-                    {place.display_name}
-                  </button>
-                </li>
-              ))}
-            </ul>
+    <div className="smartApp">
+      <header className="smartTopBar">
+        <div className="smartTopBar__left">
+          <div className="smartLogo" aria-hidden="true">
+            <span className="smartLogo__dot" />
           </div>
-
-          <div className="input-group">
-            <label htmlFor="destinationInput">Destination</label>
-            <input
-              id="destinationInput"
-              type="text"
-              placeholder="Search destination"
-              autoComplete="off"
-              value={destinationQuery}
-              onChange={(e) => setDestinationQuery(e.target.value)}
-            />
-            <ul id="destinationSuggestions" className="suggestions">
-              {destinationSuggestions.map((place) => (
-                <li key={place.place_id} className="suggestion-item">
-                  <button
-                    type="button"
-                    onClick={() => handleSuggestionClick(place, 'destination')}
-                  >
-                    {place.display_name}
-                  </button>
-                </li>
-              ))}
-            </ul>
+          <div>
+            <div className="smartTopBar__title">SmartRoute AI</div>
+            <div className="smartTopBar__sub">Traffic intelligence for every detour</div>
           </div>
         </div>
 
-        <div className="controls-row">
-          <button id="useLocationBtn" type="button">
-            Use Current Location
-          </button>
-          <button id="resetBtn" type="button">
-            Reset Route
-          </button>
+        <div className="smartTopBar__right">
+          <div className={`liveChip ${activeClosures.length ? 'liveChip--danger' : ''}`}>
+            <span className="liveChip__pulse" aria-hidden="true" />
+            {activeClosures.length ? `${activeClosures.length} active closures` : 'No active closures'}
+          </div>
         </div>
+      </header>
 
-        <p id="status">{status}</p>
+      <div className="smartLayout">
+        <aside className="smartSidebar">
+          <div className="smartSidebar__scroll">
+            <RouteControlPanel
+              startQuery={startQuery}
+              destinationQuery={destinationQuery}
+              onStartQueryChange={setStartQuery}
+              onDestinationQueryChange={setDestinationQuery}
+              startSuggestions={startSuggestions}
+              destinationSuggestions={destinationSuggestions}
+              onSelectStart={handleSelectStart}
+              onSelectDestination={handleSelectDestination}
+              onCurrentLocation={handleCurrentLocation}
+              onReset={handleReset}
+              onSearch={handleSearch}
+              canSearch={canSearch}
+              isRouting={isRouting}
+              statusHint={statusHint}
+              startPoint={startPoint}
+              endPoint={endPoint}
+            />
 
-        <p id="timeEstimate">{timeEstimate}</p>
+            <div className="smartStack">
+              <BestSmartRouteCard smartMeta={smartMeta} isRouting={isRouting} />
+              <AlternativeRoutesList
+                alternatives={alternatives}
+                selectedRouteId={selectedRouteId}
+                onSelect={(id) => selectRoute(id)}
+              />
+              <AIInsightsCard closures={activeClosures} smartMeta={smartMeta} isRouting={isRouting} />
+              <ClosureAlertsPanel statusText={statusText} activeClosures={activeClosures} nextReopen={nextReopen} isRouting={isRouting} />
+              <RouteInfoCard smartMeta={smartMeta} selectedRoute={selectedRoute} isRouting={isRouting} />
 
-        <div
-          id="routeAdvice"
-          className={`advice-box ${routeAdvice.isOk ? 'advice-ok' : ''}`}
-          role="status"
-          aria-live="polite"
-          hidden={routeAdvice.hidden}
-          dangerouslySetInnerHTML={{ __html: routeAdvice.html }}
-        ></div>
+              {error && <div className="smartError">{error}</div>}
+            </div>
+          </div>
+        </aside>
 
-        {/* Notification Settings Panel */}
-        {notificationsSupported && (
-          <section className="notification-panel" style={{ 
-            padding: '12px', 
-            backgroundColor: '#f3f4f6', 
-            borderRadius: '8px',
-            marginBottom: '12px'
-          }}>
-            <h3 style={{ margin: '0 0 8px 0', fontSize: '1rem' }}>
-              🔔 Closure Alerts
-            </h3>
-            <p style={{ margin: '0 0 12px 0', fontSize: '0.85rem', color: '#6b7280' }}>
-              Get notified before road closures start (up to 4 hours ahead)
-            </p>
-            
-            {!isGranted && !isDenied && (
-              <button 
-                onClick={requestPermission}
-                style={{
-                  padding: '8px 16px',
-                  backgroundColor: '#2563eb',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  fontSize: '0.9rem'
-                }}
-              >
-                Enable Notifications
-              </button>
-            )}
-            
-            {isGranted && (
-              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                <button 
-                  onClick={() => sendTestNotification('🚧 Test Alert', 'Road closure notifications are enabled and working!')}
-                  style={{
-                    padding: '6px 12px',
-                    backgroundColor: '#10b981',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '4px',
-                    cursor: 'pointer',
-                    fontSize: '0.85rem'
-                  }}
-                >
-                  Test Notification
-                </button>
-                <button 
-                  onClick={checkClosuresNow}
-                  style={{
-                    padding: '6px 12px',
-                    backgroundColor: '#6b7280',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '4px',
-                    cursor: 'pointer',
-                    fontSize: '0.85rem'
-                  }}
-                >
-                  Check Now
-                </button>
-                <span style={{ fontSize: '0.8rem', color: '#10b981', alignSelf: 'center' }}>
-                  ✓ Notifications enabled
-                </span>
-              </div>
-            )}
-            
-            {isDenied && (
-              <p style={{ color: '#dc2626', fontSize: '0.85rem', margin: 0 }}>
-                Notifications blocked. Please enable them in your browser settings to receive closure alerts.
-              </p>
-            )}
-          </section>
-        )}
-
-        <section
-          className="closure-panel"
-          aria-labelledby="closureHeading"
-        >
-          <h2 id="closureHeading" className="closure-heading">
-            Active Road Closures
-          </h2>
-
-          <p id="closureLoadState" className="closure-meta">
-            {closureLoadState}
-          </p>
-
-          <ul id="closureList" className="closure-list">
-            {roadClosures.map((c, i) => {
-              const statusStyle = getClosureStatusStyle(c);
-              const timeStr = formatClosureTime(c);
-              return (
-                <li key={i}>
-                  <span className="closure-road">
-                    {c.road}
-                    {!hasGeometryForCheck(c) && (
-                      <span className="closure-badge">no map zone</span>
-                    )}
-                    <span 
-                      className="closure-status-badge" 
-                      style={{ 
-                        backgroundColor: statusStyle.color,
-                        color: 'white',
-                        fontSize: '0.7rem',
-                        padding: '2px 6px',
-                        borderRadius: '4px',
-                        marginLeft: '8px'
-                      }}
-                    >
-                      {statusStyle.label}
-                    </span>
-                  </span>
-                  <span className="closure-why">{c.reason}</span>
-                  <span className="closure-time" style={{ fontSize: '0.8rem', color: '#6b7280', marginTop: '2px' }}>
-                    {timeStr}
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-      </section>
-
-      <div id="map"></div>
-    </main>
-  );
+        <main className="smartMain">
+          <SmartRoutingMap
+            startPoint={startPoint}
+            endPoint={endPoint}
+            onPickPoint={handlePickPoint}
+            roadClosures={closures}
+            routes={alternatives}
+            selectedRouteId={selectedRouteId}
+            isRouting={isRouting}
+          />
+        </main>
+      </div>
+    </div>
+  )
 }

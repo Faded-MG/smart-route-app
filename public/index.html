@@ -3,13 +3,17 @@
 <head>
   <title>Smart Route App</title>
   <meta name="referrer" content="strict-origin-when-cross-origin">
-
+  
   <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet/dist/leaflet.css"
   />
 
   <link rel="stylesheet" href="style.css">
+  <link
+    rel="stylesheet"
+    href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+  />
 </head>
 
 <body>
@@ -17,6 +21,7 @@
   <section class="top-panel">
     <h1>Smart Route Recommender</h1>
     <p class="subtitle">Search start and destination like a maps app, or use your current location.</p>
+    
     <div class="search-grid">
       <div class="input-group">
         <label for="startInput">Start</label>
@@ -29,13 +34,17 @@
         <ul id="destinationSuggestions" class="suggestions"></ul>
       </div>
     </div>
+    
     <div class="controls-row">
       <button id="useLocationBtn" type="button">Use Current Location</button>
       <button id="resetBtn" type="button">Reset Route</button>
     </div>
+    
     <p id="status">Click on the map to set a start point.</p>
     <p id="timeEstimate">Estimated time will appear after selecting destination.</p>
+    
     <div id="routeAdvice" class="advice-box" role="status" aria-live="polite" hidden></div>
+    
     <section class="closure-panel" aria-labelledby="closureHeading">
       <h2 id="closureHeading" class="closure-heading">Active road closures</h2>
       <p id="closureLoadState" class="closure-meta">Loading closure list…</p>
