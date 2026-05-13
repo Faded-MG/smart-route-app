@@ -20,8 +20,8 @@ This project is built as part of my learning journey in full-stack development a
 ## Tech Stack
 
 - Frontend: React (Vite)
-- Backend: Node.js (if applicable)
-- Styling: CSS / Tailwind (if used)
+- Backend: Node.js, Express
+- Styling: CSS / Tailwind
 - Data: JSON / simulated datasets
 
 ## Project Structure
